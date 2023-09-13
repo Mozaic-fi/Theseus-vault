@@ -39,7 +39,7 @@
   },
   "dependencies": {
     "@chainlink/contracts": "^0.6.1",
-    "@openzeppelin/contracts": "4.7.3",
+    "@openzeppelin/contracts": "4.9.3",
     "bn.js": "^5.2.1",
     "dotenv": "16.0.3",
     "eslint-plugin-chai-friendly": "^0.7.2",
