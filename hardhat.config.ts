@@ -73,6 +73,7 @@ const config: HardhatUserConfig = {
           constantOptimizer: true,
         },
       },
+      // viaIR: true,
     },
   },
   networks: {
@@ -143,7 +144,8 @@ const config: HardhatUserConfig = {
       // hardhat-etherscan plugin uses "avalancheFujiTestnet" name
       arbitrumOne: process.env.ARBISCAN_API_KEY,
       avalanche: process.env.SNOWTRACE_API_KEY,
-      arbitrumGoerli: process.env.ARBISCAN_API_KEY,
+      // arbitrumGoerli: process.env.ARBISCAN_API_KEY,
+      arbitrumGoerli: "5MZF8XBDIDP8XTUMI7D9VZZ3AFZYCQYBCY",
       avalancheFujiTestnet: process.env.SNOWTRACE_API_KEY,
     },
   },

@@ -21,6 +21,11 @@ contract TokenPriceConsumer is Ownable {
         tokenPriceFeeds[tokenAddress] = AggregatorV3Interface(priceFeedAddress);
     }
 
+    function removePriceFeed(address tokenAddress) public onlyOwner {
+        require(address(tokenPriceFeeds[tokenAddress]) != address(0), "PriceFeed already exist");
+        tokenPriceFeeds[tokenAddress] = AggregatorV3Interface(address(0));
+    }
+
     function getTokenPrice(address tokenAddress) public view returns (uint256) {
         AggregatorV3Interface priceFeed = tokenPriceFeeds[tokenAddress];
         require(address(priceFeed) != address(0), "Price feed not found");
@@ -28,5 +33,11 @@ contract TokenPriceConsumer is Ownable {
         (, int256 answer, , , ) = priceFeed.latestRoundData();
         // Token price might need additional scaling based on decimals
         return uint256(answer);
+    }
+
+    function decimals(address tokenAddress) public view returns (uint8) {
+        AggregatorV3Interface priceFeed = tokenPriceFeeds[tokenAddress];
+        require(address(priceFeed) != address(0), "Price feed not found");
+        return priceFeed.decimals();
     }
 }
