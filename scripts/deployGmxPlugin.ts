@@ -66,12 +66,6 @@ export const deployContracts = async () => {
         value: amount,
     });
 
-    // const totoal = fixture.contracts.ethUsdMarket.marketToken;
-    // // MarketToken
-    // const TokenContract = await ethers.getContractFactory('MarketToken');
-    // const tokenInstance = await TokenContract.attach(totoal);
-    // console.log("total supply--", (await tokenInstance.totalSupply()).toString());
-
     return {
         gmxFixture: fixture,
         pluginFixture: {

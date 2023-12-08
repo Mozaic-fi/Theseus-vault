@@ -105,7 +105,7 @@ describe("GmxPlugin Test", () => {
 
             await gmxPlugin.addPool(poolId, indexToken, longToken, shortToken, marketToken);
 
-            const index = await gmxPlugin.findPoolIndexById(poolId);
+            const index = await gmxPlugin.getPoolIndexById(poolId);
             const pool = await gmxPlugin.pools(index);
             const poolExists = await gmxPlugin.poolExistsMap(poolId);
 

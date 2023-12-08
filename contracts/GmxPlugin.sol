@@ -56,10 +56,6 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
     // Constant defining the decimal precision for market token prices.
     uint256 public constant MARKET_TOKEN_PRICE_DECIMALS = 30;
 
-    // Constant defining the general decimal precision for prices.
-    uint256 public constant PRICE_DECIMAL = 18;
-
-
     /* ========== STATE VARIABLES ========== */
     // Address of the master contract, controlling the overall functionality.
     address public master;

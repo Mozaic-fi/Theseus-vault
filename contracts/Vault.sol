@@ -52,7 +52,7 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
     // Stores the address of the token price consumer contract.
     address public tokenPriceConsumer;
 
-    // Maps plugin IDs to their respective indices.
+    // Maps plugin IDs to their respective index.
     mapping(uint256 => uint256) public pluginIdToIndex;
 
     // An array to store instances of the Plugin struct.
@@ -91,11 +91,15 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
     // Stores the ID of the currently selected pool.
     uint256 public selectedPoolId;
 
-
-    uint256 public totalAssets;
-    uint256 public lpRate;
+    uint256 public lpRate = 1e18;
     uint256 public protocolFeePercentage;
     uint256 public protocolFeeInVault;
+
+    uint256 public depositMinExecFee;
+    uint256 public withdrawMinExecFee;
+
+    uint256 public constant BP_DENOMINATOR = 1e4;
+    uint256 public constant MAX_FEE = 1e3;
 
     /* ========== EVENTS ========== */
     event AddPlugin(uint256 _pluginId, address _pluginAddress);
@@ -105,6 +109,8 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
     event TokenPriceConsumerUpdated(address _oldTokenPriceConsumer, address _newTokenPriceConsumer);
     event SetTreasury(address payable treasury);
     event UpdatedProtocolStatus(Status _newStatus);
+    event SetProtocolFeePercentage(uint256 _protocolFeePercentage);
+    event SetExecutionFee(uint256 _depositMinExecFee, uint256 _withdrawMinExecFee);
 
     event AddAcceptedToken(address _token);
     event RemoveAcceptedToken(address _token);
@@ -190,6 +196,12 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         selectedPluginId = _pluginId;
         selectedPoolId = _poolId;
         emit SelectPluginAndPool(_pluginId, _poolId);
+    }
+
+    function setExecutionFee(uint256 _depositMinExecFee, uint256 _withdrawMinExecFee) onlyMaster public {
+        depositMinExecFee = _depositMinExecFee;
+        withdrawMinExecFee = _withdrawMinExecFee;
+        emit SetExecutionFee(_depositMinExecFee, withdrawMinExecFee);
     }
 
     // Allows the owner to add a new accepted token.
@@ -333,11 +345,19 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         emit RemovePlugin(_pluginId);
     }
 
+    function setProtocolFeePercentage(uint256 _protocolFeePercentage) external onlyOwner {
+        require(_protocolFeePercentage <= MAX_FEE, "Vault: protocol fee exceeds the max fee");
+        protocolFeePercentage = _protocolFeePercentage;
+        emit SetProtocolFeePercentage(_protocolFeePercentage);
+    }
+
 
     /* ========== USER FUNCTIONS ========== */
     
     // Allows users to initiate a deposit request by converting tokens to LP tokens and staking them into the selected pool.
-    function addDepositRequest(address _token, uint256 _tokenAmount) external nonReentrant {
+    function addDepositRequest(address _token, uint256 _tokenAmount) external payable nonReentrant {
+        require(msg.value >= depositMinExecFee, "Vault: Insufficient execution fee");
+
         // Ensure the deposited token is allowed for deposit in the vault.
         require(isDepositAllowedToken(_token), "Vault: Invalid token");
         
@@ -390,7 +410,9 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
 
 
     // Allows users to initiate a withdrawal request by providing the amount of LP tokens they want to withdraw.
-    function addWithdrawRequest(address _token, uint256 _amountLP) external nonReentrant {
+    function addWithdrawRequest(address _token, uint256 _amountLP) external payable nonReentrant {
+        require(msg.value >= withdrawMinExecFee, "Vault: Insufficient execution fee");
+
         // Ensure the provided token is valid for withdrawal.
         require(isWithdrawalToken(_token), "Vault: Invalid token");
 
@@ -558,29 +580,26 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         emit ApproveTokens(_pluginId, _tokens, _amounts);
     }
 
-    function UpateLpRate() external onlyMaster nonReentrant {
-        uint256 totalProfit;
+    function upateLiquidityProviderRate() external onlyMaster nonReentrant {
         uint256 previousRate = lpRate;
         
-        // Calculate total assets and current rate
-        totalAssets = totalAssetInUsd() > protocolFeeInVault ? totalAssetInUsd() - protocolFeeInVault: 0;
-        uint256 currentRate = totalAssets.mul(1e18).div(totalSupply());
+        // Calculate current rate
+        uint256 currentRate = getCurrentLiquidityProviderRate();
         
         // Check if the current rate is higher than the previous rate
         if (currentRate > previousRate) {
             // Calculate the change in rate and update total profit
             uint256 deltaRate = currentRate - previousRate;
-            totalProfit = deltaRate.mul(totalSupply()).div(1e18);
+            uint256 totalProfit = convertDecimals(deltaRate * totalSupply(), 18 + MOZAIC_DECIMALS, ASSET_DECIMALS);
             
-            // Set protocol fee percentage and calculate protocol fee
-            uint256 feePercentage = protocolFeePercentage;
-            
-            uint256 protocolFee = totalProfit.mul(feePercentage).div(1e4);
+            // Calculate protocol fee        
+            uint256 protocolFee = totalProfit.mul(protocolFeePercentage).div(BP_DENOMINATOR);
             
             protocolFeeInVault += protocolFee;
             // Update the LP rates
-            lpRate = (totalAssets.sub(protocolFee)).mul(1e18).div(totalSupply());
+            lpRate = getCurrentLiquidityProviderRate();
         } else {
+            // Update the LP rates
             lpRate = currentRate;
         }
     }
@@ -588,6 +607,7 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
     // Withdraws protocol fees stored in the vault for a specific token.
     function withdrawProtocolFee(address _token) external onlyMaster nonReentrant {
         require(isAcceptedToken(_token), "Vault: Invalid token");
+
         // Calculate the token amount from the protocol fee in the vault
         uint256 tokenAmount = calculateTokenAmountFromUsd(_token, protocolFeeInVault);
 
@@ -606,6 +626,13 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         // Emit an event to log the withdrawal
         emit WithdrawProtocolFee(_token, transferAmount);
     }
+
+    function transferExecutionFee(uint256 _pluginId, uint256 _amount) external onlyMaster() nonReentrant {
+        Plugin memory plugin = getPlugin(_pluginId);
+        require(_amount <= address(this).balance, "Vault: Insufficient balance");
+        (bool success, ) = plugin.pluginAddress.call{value: _amount}("");
+        require(success, "Vault: Failed to send Ether");
+    } 
 
     /* ========== VIEW FUNCTIONS ========== */
 
@@ -627,6 +654,26 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         // Retrieve and return details about the specified plugin.
         Plugin memory plugin = plugins[pluginIdToIndex[_pluginId] - 1];
         return plugin;
+    }
+
+    // Retrieves the current liquidity provider rate.
+    function getCurrentLiquidityProviderRate() public view returns(uint256) {
+        uint256 _totalAssets = totalAssetInUsd() > protocolFeeInVault ? totalAssetInUsd() - protocolFeeInVault: 0;
+        
+        // Variable to store the current rate
+        uint256 currentRate;
+
+         // Check if total supply or total assets is zero
+        if (totalSupply() == 0 || _totalAssets == 0) {
+            currentRate = 1e18;
+        } else {
+            // Convert total assets to the desired decimals
+            uint256 adjustedAssets = convertDecimals(_totalAssets, ASSET_DECIMALS, MOZAIC_DECIMALS);
+
+            // Calculate the current rate
+            currentRate = adjustedAssets * 1e18 / totalSupply();
+        }
+        return currentRate;
     }
 
     // Calculate the total value of assets held by the vault, including liquidity from registered plugins
@@ -762,12 +809,13 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
     // Convert an asset amount to LP tokens based on the current total asset and total LP token supply.
     function convertAssetToLP(uint256 _amount) public view returns (uint256) {
         // If the total asset is zero, perform direct decimal conversion.
-        if (totalAssetInUsd() == 0) {
+        uint256 _totalAssetInUsd = totalAssetInUsd() > protocolFeeInVault ?  totalAssetInUsd() - protocolFeeInVault : 0;
+        if (_totalAssetInUsd == 0) {
             return convertDecimals(_amount, ASSET_DECIMALS, MOZAIC_DECIMALS);
         }
-
+        
         // Perform conversion based on the proportion of the provided amount to the total asset.
-        return (_amount * totalSupply()) / totalAssetInUsd();
+        return (_amount * totalSupply()) / _totalAssetInUsd;
     }
 
     // Convert LP tokens to an equivalent asset amount based on the current total asset and total LP token supply.
@@ -776,9 +824,9 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         if (totalSupply() == 0) {
             return convertDecimals(_amount, MOZAIC_DECIMALS, ASSET_DECIMALS);
         }
-
+        uint256 _totalAssetInUsd = totalAssetInUsd() > protocolFeeInVault ?  totalAssetInUsd() - protocolFeeInVault : 0;
         // Perform conversion based on the proportion of the provided amount to the total LP token supply.
-        return (_amount * totalAssetInUsd()) / totalSupply();
+        return (_amount * _totalAssetInUsd) / totalSupply();
     }
 
     // Retrieve the decimal precision of the token (MOZAIC_DECIMALS).
@@ -793,15 +841,5 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
     
     function getBalance() public view returns (uint) {
         return address(this).balance;
-    }
-
-    function withdrawFee(uint256 _amount) public onlyOwner {
-        // get the amount of Ether stored in this contract
-        uint amount = address(this).balance;
-        require(amount >= _amount, "Vault: Invalid withdraw amount.");
-                                                  
-        require(treasury != address(0), "Vault: Invalid treasury");
-        (bool success, ) = treasury.call{value: _amount}("");
-        require(success, "Vault: Failed to send Ether");
     }
 }
