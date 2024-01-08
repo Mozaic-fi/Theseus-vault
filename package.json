@@ -44,7 +44,7 @@
     "dotenv": "16.0.3",
     "eslint-plugin-chai-friendly": "^0.7.2",
     "get-all-files": "^4.1.0",
-    "hardhat-contract-sizer": "^2.6.1",
+    "hardhat-contract-sizer": "^2.10.0",
     "prb-math": "2.4.3",
     "solidity-code-metrics": "^0.0.22",
     "solidity-coverage": "^0.7.22",

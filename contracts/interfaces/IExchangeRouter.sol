@@ -127,4 +127,7 @@ interface IExchangeRouter {
         CreateOrderParams calldata params
     ) external payable returns (bytes32);
 
+    function cancelDeposit(bytes32 key) external payable;
+    function cancelWithdrawal(bytes32 key) external payable;
+    function cancelOrder(bytes32 key) external payable;
 }

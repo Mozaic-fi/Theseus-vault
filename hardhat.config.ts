@@ -76,6 +76,11 @@ const config: HardhatUserConfig = {
       // viaIR: true,
     },
   },
+  // contractSizer: {
+  //   alphaSort: false,
+  //   runOnCompile: true,
+  //   disambiguatePaths: false,
+  // },
   networks: {
     hardhat: {
       saveDeployments: true,

@@ -34,14 +34,28 @@ export const deployContracts = async () => {
     await vault.setTokenPriceConsumer(tokenPriceConsumer.address);
     
     // gmx Plugin setting
-    // const gmxPlugin = await deployNew("GmxPlugin", [fixture.accounts.user0.address]);
     const gmxPlugin = await deployNew("GmxPlugin", [vault.address]);
+
+    const gmxCallback = await deployNew("GmxCallback", [vault.address, gmxPlugin.address]);
+
+    await gmxCallback.setHandler(fixture.contracts.depositHandler.address, fixture.contracts.withdrawalHandler.address, fixture.contracts.orderHandler.address);
 
     await gmxPlugin.setMaster(wallet.address);
 
     await gmxPlugin.setTokenPriceConsumer(tokenPriceConsumer.address);
 
     await vault.addPlugin(1, gmxPlugin.address);
+
+    await vault.setTreasury(fixture.accounts.user8.address);
+
+    await vault.setVaultLockers([gmxCallback.address]);
+
+    await vault.setVaultManagers([gmxCallback.address]);
+
+    await vault.connect(wallet).addAcceptedToken(fixture.contracts.usdc.address);
+    await vault.connect(wallet).addAcceptedToken(fixture.contracts.wnt.address);
+    await vault.connect(wallet).addDepositAllowedToken(fixture.contracts.usdc.address);
+    await vault.connect(wallet).addDepositAllowedToken(fixture.contracts.wnt.address);
 
     await gmxPlugin.setRouterConfig(
         fixture.contracts.exchangeRouter.address, 
@@ -52,6 +66,17 @@ export const deployContracts = async () => {
         fixture.contracts.reader.address
     );
 
+    const callbackGasLimit = 2000000;
+    const executionFee = expandDecimals(1, 18);
+
+    await gmxPlugin.setGmxParams(
+        gmxPlugin.address,
+        gmxCallback.address,
+        callbackGasLimit,
+        executionFee,
+        false
+    );
+
     await gmxPlugin.addPool(
         1,
         fixture.contracts.ethUsdMarket.indexToken,
@@ -59,6 +84,7 @@ export const deployContracts = async () => {
         fixture.contracts.ethUsdMarket.shortToken, 
         fixture.contracts.ethUsdMarket.marketToken
     );
+
 
     const amount = ethers.utils.parseEther('1'); // 1 Ether
     await wallet.sendTransaction({
@@ -71,6 +97,7 @@ export const deployContracts = async () => {
         pluginFixture: {
             vault,
             gmxPlugin,
+            gmxCallback,
             tokenPriceConsumer,
         }
     }

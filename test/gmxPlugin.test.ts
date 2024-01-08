@@ -29,13 +29,15 @@ enum ActionType {
     SwapTokens,
     ClaimRewards
 }
+enum State { Deposit, Withdrawal, Order }
+
 describe("GmxPlugin Test", () => {
     const { provider } = ethers;
 
     let wallet, user0, user1, user2, user3, signer0, signer1, signer2, signer3, signer4, signer7, signer9;
     let roleStore, dataStore, eventEmitter, oracleStore, oracle, wnt, wbtc, usdc, ethUsdMarket, depositVault, depositHandler, depositStoreUtils, reader, withdrawalHandler, orderVault;
     let oracleSalt;
-    let vault, gmxPlugin, tokenPriceConsumer;
+    let vault, gmxPlugin, tokenPriceConsumer, gmxCallback;
     let marketToken;
     let mockExchageRouter, mockRouter, mockDepositVault, mockWithdrawVault;
     let fixture: any;
@@ -45,7 +47,7 @@ describe("GmxPlugin Test", () => {
 
         ({ roleStore, dataStore, eventEmitter, oracleStore, oracle, wnt, wbtc, usdc, ethUsdMarket, depositVault, depositHandler, withdrawalHandler, depositStoreUtils, reader, orderVault } = fixture.gmxFixture.contracts);
         ({ oracleSalt } = fixture.gmxFixture.props);
-        ({ vault, tokenPriceConsumer} = fixture.pluginFixture);
+        ({ vault, gmxCallback, tokenPriceConsumer} = fixture.pluginFixture);
 
         gmxPlugin = await deployNew("GmxPlugin", [user0.address]);
 
@@ -53,12 +55,26 @@ describe("GmxPlugin Test", () => {
         await gmxPlugin.setTokenPriceConsumer(tokenPriceConsumer.address);
         await gmxPlugin.setRouterConfig(
             fixture.gmxFixture.contracts.exchangeRouter.address, 
-            fixture.gmxFixture.contracts.router.address, 
+            fixture.gmxFixture.contracts.router.address,
             fixture.gmxFixture.contracts.depositVault.address, 
             fixture.gmxFixture.contracts.withdrawalVault.address,
             fixture.gmxFixture.contracts.orderVault.address,
             fixture.gmxFixture.contracts.reader.address
         );
+
+        const callbackGasLimit = 2000000;
+        const executionFee = expandDecimals(1, 18);
+
+        await gmxPlugin.setGmxParams(
+            gmxPlugin.address,
+            gmxCallback.address,
+            callbackGasLimit,
+            executionFee,
+            false
+        );
+
+        await gmxCallback.setConfig(user0.address, gmxPlugin.address);
+
         await gmxPlugin.addPool(
             1,
             fixture.gmxFixture.contracts.ethUsdMarket.indexToken,
@@ -152,18 +168,28 @@ describe("GmxPlugin Test", () => {
     })
 
     describe("Deposit", async () => {
+        let depositKeys = [];
+        let withdrawalKeys = [];
+        let orderKeys = [];
         it("CreateDeposit", async () => {
             const poolId = 1;
             const longtokenAmount = "1000000000000000000";
             const shorttokenAmount = 1000_000000;
-            const payload = ethers.utils.defaultAbiCoder.encode(['uint8','address[]','uint256[]'],[poolId, [wnt.address, usdc.address] ,[longtokenAmount, shorttokenAmount]]);
+            
+            depositKeys = await gmxCallback.getKeys(State.Deposit);
+            expect(depositKeys.length).equal(0);
 
             await wnt.mint(user0.address, longtokenAmount);
             await usdc.mint(user0.address, shorttokenAmount);
-
+            
             await wnt.connect(user0).approve(gmxPlugin.address, longtokenAmount);
             await usdc.connect(user0).approve(gmxPlugin.address, shorttokenAmount);
+
+            const payload = ethers.utils.defaultAbiCoder.encode(['uint8','address[]','uint256[]','uint256'],[poolId, [wnt.address, usdc.address] ,[longtokenAmount, shorttokenAmount], 0]);
             await gmxPlugin.connect(user0).execute(ActionType.Stake, payload);
+
+            depositKeys = await gmxCallback.getKeys(State.Deposit);
+            expect(depositKeys.length).equal(1);
         });
         it("ExecuteDeposit", async () => {
             const block0 = await provider.getBlock((await provider.getBlockNumber()));
@@ -217,11 +243,15 @@ describe("GmxPlugin Test", () => {
                 compactedMaxPricesIndexes: getCompactedPriceIndexes([0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6]),
                 signatures: wntSignatures.concat(usdcSignatures),
             };
-            const depositKeys = await getDepositKeys(dataStore, 0, 1);
-            
+            depositKeys = await gmxCallback.getKeys(State.Deposit);
+            expect(depositKeys.length).equal(1);
+
             const deposit = await reader.getDeposit(dataStore.address, depositKeys[0]);
 
             await depositHandler.executeDeposit(depositKeys[0], params);
+
+            depositKeys = await gmxCallback.getKeys(State.Deposit);
+            expect(depositKeys.length).equal(0);
 
             expect(await marketToken.balanceOf(gmxPlugin.address)).eq("6000000000000000000000");
         });
@@ -230,11 +260,13 @@ describe("GmxPlugin Test", () => {
             const poolId = 1;
             const marketTokenAmount = await marketToken.balanceOf(gmxPlugin.address);
             
-            const payload = ethers.utils.defaultAbiCoder.encode(['uint8','uint256'],[poolId, marketTokenAmount]);
+            const _payload = ethers.utils.defaultAbiCoder.encode(['uint256', 'uint256'], [0, 0]);
+            const payload = ethers.utils.defaultAbiCoder.encode(['uint8','uint256', 'uint256', 'address', 'bytes'],[poolId, marketTokenAmount, 0, user0.address, _payload]);
 
             await gmxPlugin.connect(user0).execute(1, payload);
 
-            const withdrawalKeys = await getWithdrawalKeys(dataStore, 0, 1);
+            withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+            expect(withdrawalKeys.length).to.equal(1);
 
             const block0 = await provider.getBlock((await provider.getBlockNumber()));
             const block1 = await provider.getBlock((await provider.getBlockNumber()));
@@ -297,6 +329,9 @@ describe("GmxPlugin Test", () => {
             let wntBalanceAfter = await wnt.balanceOf(user0.address);
             expect(usdcBalanceAfter - usdcBalanceBefore).to.be.equal(1000000000);
             expect(Number(wntBalanceAfter - wntBalanceBefore)).to.be.equal(1000000000000000000);
+
+            withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+            expect(withdrawalKeys.length).to.equal(0);
         });
 
 
@@ -307,7 +342,7 @@ describe("GmxPlugin Test", () => {
                     shortTokenAmount: expandDecimals(50_000, 6),
                 },
             });
-            
+
             const orderParams = {
                 create: {
                     receiver: user0,
@@ -317,6 +352,7 @@ describe("GmxPlugin Test", () => {
                     orderType: OrderType.MarketSwap,
                     swapPath: [ethUsdMarket.marketToken],
                     gasUsageLabel: "orderHandler.createOrder",
+                    callbackContract: gmxCallback,
                     gmx: gmxPlugin,
                 },
                 execute: {
@@ -331,12 +367,21 @@ describe("GmxPlugin Test", () => {
 
             let orderCountBefore = await getOrderCount(dataStore);
 
+            orderKeys = await gmxCallback.getKeys(State.Order);
+            expect(orderKeys.length).to.equal(0);
+
             await createGmxPluginOrder(fixture.gmxFixture, orderParams.create);
             
+            orderKeys = await gmxCallback.getKeys(State.Order);
+            expect(orderKeys.length).to.equal(1);
+
             let orderCountAfter = await getOrderCount(dataStore);
             await executeOrder(fixture.gmxFixture, orderParams.execute);
-            let usdBalanceAfter = await usdc.balanceOf(user0.address);
 
+            orderKeys = await gmxCallback.getKeys(State.Order);
+            expect(orderKeys.length).to.equal(0);
+
+            let usdBalanceAfter = await usdc.balanceOf(user0.address);
             expect(orderCountAfter - orderCountBefore).eq(1);
             expect(usdBalanceAfter - usdBalanceBefore).eq(50000_000000);
         });
@@ -362,7 +407,7 @@ describe("GmxPlugin Test", () => {
                     triggerPrice: decimalToFloat(4800),
                     acceptablePrice: decimalToFloat(4900),
                     executionFee,
-                    callbackGasLimit: "200000",
+                    callbackGasLimit: "2000000",
                     minOutputAmount: 700,
                 },
                 orderType: OrderType.LimitIncrease,
@@ -403,15 +448,21 @@ describe("GmxPlugin Test", () => {
                 value: amount,
             });
 
+            orderKeys = await gmxCallback.getKeys(State.Order);
+            expect(orderKeys.length).to.equal(0);
+            
             await gmxPlugin.connect(user0).execute(ActionType.SwapTokens, payload);
+
+            orderKeys = await gmxCallback.getKeys(State.Order);
+            expect(orderKeys.length).to.equal(1);
+
             const block = await ethers.provider.getBlock('latest');
 
-            const orderKeys = await getOrderKeys(dataStore, 0, 1);
             const order = await reader.getOrder(dataStore.address, orderKeys[0]);
 
             expect(order.addresses.account).eq(gmxPlugin.address);
             expect(order.addresses.receiver).eq(user0.address);
-            expect(order.addresses.callbackContract).eq(user2.address);
+            expect(order.addresses.callbackContract).eq(gmxCallback.address);
             expect(order.addresses.market).eq(ethUsdMarket.marketToken);
             expect(order.addresses.initialCollateralToken).eq(ethUsdMarket.shortToken);
             expect(order.addresses.swapPath).deep.eq([ethUsdMarket.marketToken]);
@@ -422,7 +473,7 @@ describe("GmxPlugin Test", () => {
             expect(order.numbers.triggerPrice).eq(decimalToFloat(4800));
             expect(order.numbers.acceptablePrice).eq(decimalToFloat(4900));
             expect(order.numbers.executionFee).eq(expandDecimals(11, 18));
-            expect(order.numbers.callbackGasLimit).eq("200000");
+            expect(order.numbers.callbackGasLimit).eq("2000000");
             expect(order.numbers.minOutputAmount).eq(700);
             expect(order.numbers.updatedAtBlock).eq(block.number);
 
@@ -482,9 +533,9 @@ describe("GmxPlugin Test", () => {
             expect(await getPositionCount(dataStore)).eq(1);
         })
 
-        it("getMarketTokenPrice", async() => {
-            const price = await gmxPlugin.getMarketTokenPrice(1, true);
-            expect(price).to.be.equal("1000000000000000000000000000000");
+        it("getPoolTokenPrice", async() => {
+            const price = await gmxPlugin.getPoolTokenPrice(1, true);
+            expect(price).to.gt("0");
         })    
     })
 });

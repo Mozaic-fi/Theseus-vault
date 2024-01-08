@@ -125,19 +125,6 @@
       "type": "function"
     },
     {
-      "inputs": [],
-      "name": "PRICE_DECIMAL",
-      "outputs": [
-        {
-          "internalType": "uint256",
-          "name": "",
-          "type": "uint256"
-        }
-      ],
-      "stateMutability": "view",
-      "type": "function"
-    },
-    {
       "inputs": [
         {
           "internalType": "uint256",
@@ -249,25 +236,6 @@
           "type": "uint256"
         }
       ],
-      "name": "findPoolIndexById",
-      "outputs": [
-        {
-          "internalType": "uint256",
-          "name": "poolIndex",
-          "type": "uint256"
-        }
-      ],
-      "stateMutability": "view",
-      "type": "function"
-    },
-    {
-      "inputs": [
-        {
-          "internalType": "uint256",
-          "name": "_poolId",
-          "type": "uint256"
-        }
-      ],
       "name": "getAllowedTokens",
       "outputs": [
         {
@@ -311,6 +279,25 @@
           "internalType": "int256",
           "name": "",
           "type": "int256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "_poolId",
+          "type": "uint256"
+        }
+      ],
+      "name": "getPoolIndexById",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "poolIndex",
+          "type": "uint256"
         }
       ],
       "stateMutability": "view",
