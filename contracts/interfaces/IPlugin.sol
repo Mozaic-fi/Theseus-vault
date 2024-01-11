@@ -24,5 +24,5 @@ interface IPlugin {
 
     function getPoolTokenPrice(uint8 _poolId, bool _maximize) external view returns (int256);
 
-    function getPoolTokenInfo(uint8 _poolId) external view returns (address, uint8);
+    function getPoolTokenInfo(uint8 _poolId) external view returns (address token, uint8 decimal, uint256 balance);
 }

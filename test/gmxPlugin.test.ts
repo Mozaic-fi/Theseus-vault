@@ -185,7 +185,9 @@ describe("GmxPlugin Test", () => {
             await wnt.connect(user0).approve(gmxPlugin.address, longtokenAmount);
             await usdc.connect(user0).approve(gmxPlugin.address, shorttokenAmount);
 
-            const payload = ethers.utils.defaultAbiCoder.encode(['uint8','address[]','uint256[]','uint256'],[poolId, [wnt.address, usdc.address] ,[longtokenAmount, shorttokenAmount], 0]);
+            const minGmAmount = ethers.utils.parseEther("6000");
+            const _payload = ethers.utils.defaultAbiCoder.encode(['uint256'], [minGmAmount]);
+            const payload = ethers.utils.defaultAbiCoder.encode(['uint8','address[]','uint256[]','bytes'],[poolId, [wnt.address, usdc.address] ,[longtokenAmount, shorttokenAmount], _payload]);
             await gmxPlugin.connect(user0).execute(ActionType.Stake, payload);
 
             depositKeys = await gmxCallback.getKeys(State.Deposit);

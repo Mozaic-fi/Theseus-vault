@@ -24,11 +24,8 @@ describe("Vault Test", () => {
       Stake,
       Unstake,
       SwapTokens,
-      ClaimRewards
-    }   
-    enum Status {
-        Normal,
-        Pending
+      ClaimRewards,
+      CancelAction
     }
 
     enum State { Deposit, Withdrawal, Order }
@@ -292,6 +289,8 @@ describe("Vault Test", () => {
     });
 
     describe("addDepositRequest", async () => {
+        let minGmAmount: any = 0;
+        let payload = "";
         before(async () => {
             await vault.connect(wallet).setTokenPriceConsumer(tokenPriceConsumer.address);
             await vault.connect(wallet).setExecutionFee(1000000000000000, 0);
@@ -307,7 +306,9 @@ describe("Vault Test", () => {
             await usdc.connect(user0).approve(vault.address, usdcAmount);
             await wnt.connect(user0).approve(vault.address, wntAmount);
 
-            await vault.connect(user0).addDepositRequest(usdc.address, usdcAmount, {value: 1000000000000000});
+            minGmAmount = ethers.utils.parseEther("1000");
+            payload = ethers.utils.defaultAbiCoder.encode(['uint256'], [minGmAmount]);
+            await vault.connect(user0).addDepositRequest(usdc.address, usdcAmount, payload, {value: 1000000000000000});
 
             // Check if the user's LP token balance has increased
             let lpTokenBalance = await vault.balanceOf(user0.address);
@@ -317,7 +318,9 @@ describe("Vault Test", () => {
             const contractTokenBalance = await usdc.balanceOf(vault.address);
             expect(contractTokenBalance).to.equal(usdcAmount);
 
-            await vault.connect(user0).addDepositRequest(wnt.address, wntAmount, {value: 1000000000000000});
+            minGmAmount = ethers.utils.parseEther("5000");
+            payload = ethers.utils.defaultAbiCoder.encode(['uint256'], [minGmAmount]);
+            await vault.connect(user0).addDepositRequest(wnt.address, wntAmount, payload, {value: 1000000000000000});
             lpTokenBalance = await vault.balanceOf(user0.address);
             expect(lpTokenBalance).to.be.equal(6000_000000);
 
@@ -327,56 +330,92 @@ describe("Vault Test", () => {
             const nonAllowedToken = signer9;
             const tokenAmount = ethers.utils.parseEther("100");
         
+            minGmAmount = ethers.utils.parseEther("1000");
+            payload = ethers.utils.defaultAbiCoder.encode(['uint256'], [minGmAmount]);
             // Call the addDepositRequest function with a non-allowed token and expect it to revert
-            await expect(vault.connect(user0).addDepositRequest(nonAllowedToken.address, tokenAmount, {value: 1000000000000000}))
+            await expect(vault.connect(user0).addDepositRequest(nonAllowedToken.address, tokenAmount, payload, {value: 1000000000000000}))
                 .to.be.revertedWith("Vault: Invalid token");
         });
       
         it("should revert if the token amount is zero", async function () {
-        // Call the addDepositRequest function with zero token amount and expect it to revert
-        await expect(vault.connect(user0).addDepositRequest(usdc.address, 0, {value: 1000000000000000}))
-            .to.be.revertedWith("Vault: Invalid token amount");
-        });
+            minGmAmount = ethers.utils.parseEther("1000");
+            payload = ethers.utils.defaultAbiCoder.encode(['uint256'], [minGmAmount]);
+            // Call the addDepositRequest function with zero token amount and expect it to revert
+            await expect(vault.connect(user0).addDepositRequest(usdc.address, 0, payload, {value: 1000000000000000}))
+                .to.be.revertedWith("Vault: Invalid token amount");
+            });
     })
 
     describe("Execute Action", async () => {
         let depositKeys = [];
         it("Stake", async () => {
+            // Setting the master address for the vault
             await vault.setMaster(wallet.address);
+        
+            // Defining token amounts and minimum GMA amount
             const shortTokenAmount = ethers.utils.parseUnits("1000", 6);
             const longTokenAmount = ethers.utils.parseUnits("1", 18);
-
-            const payload = ethers.utils.defaultAbiCoder.encode(['uint8', 'address[]', 'uint256[]', 'uint256'],[1, [wnt.address, usdc.address], [longTokenAmount, shortTokenAmount], 0]);
-            
+            const minGmAMount = ethers.utils.parseEther("1000");
+            const _payload = ethers.utils.defaultAbiCoder.encode(['uint256'], [minGmAMount]);
+            // Encoding parameters for the payload
+            const payload = ethers.utils.defaultAbiCoder.encode(['uint8', 'address[]', 'uint256[]', 'bytes'], [1, [wnt.address, usdc.address], [longTokenAmount, shortTokenAmount], _payload]);
+        
+            // Checking balances before the stake
             const usdcBalanceBefore = await usdc.balanceOf(vault.address);
             const wntBalanceBefore = await wnt.balanceOf(vault.address);
             expect(usdcBalanceBefore).to.be.equal(1000000000); // 1000 usd
             expect(wntBalanceBefore).to.be.equal("1000000000000000000"); // 1 eth
-
+        
+            // Checking the deposit keys before the stake
             depositKeys = await gmxCallback.getKeys(State.Deposit);
             expect(depositKeys.length).eq(0);
-
+        
+            // Executing the stake action
             await vault.connect(wallet).execute(1, ActionType.Stake, payload);
-
-            const usdcBalanceAfter = await usdc.balanceOf(vault.address);            
+        
+            // Checking balances after the stake
+            const usdcBalanceAfter = await usdc.balanceOf(vault.address);
             const wntBalanceAfter = await wnt.balanceOf(vault.address);
             expect(usdcBalanceAfter).to.be.equal(0);
             expect(wntBalanceAfter).to.be.equal(0);
+        
+            // Checking the market token amount before deposit
             const marketTokenAmountBefore = await marketToken.balanceOf(gmxPlugin.address);
             expect(marketTokenAmountBefore).eq("0");
-
+        
+            // Getting the current block and deposit keys after the stake
             const block = await provider.getBlock((await provider.getBlockNumber()));
             depositKeys = await gmxCallback.getKeys(State.Deposit);
             expect(depositKeys.length).eq(1);
+        
+            // Checking vault status before and after deposit
+            let vaultStatus = await vault.getVaultStatus();
+            expect(vaultStatus).to.equal(false);
 
             await executeDeposit(fixture, block);
-
+            
+            vaultStatus = await vault.getVaultStatus();
+            expect(vaultStatus).to.equal(true);
+        
+            // Checking deposit keys after deposit
             depositKeys = await gmxCallback.getKeys(State.Deposit);
             expect(depositKeys.length).eq(0);
-
+        
+            // Checking market token amount after deposit
             const marketTokenAmountAfter = await marketToken.balanceOf(gmxPlugin.address);
+            expect(marketTokenAmountAfter).to.equal("6000000000000000000000");
+        
+            // Checking balances in vault and gmxPlugin after deposit
+            const usdcBalance = await usdc.balanceOf(vault.address);
+            const wntBalance = await wnt.balanceOf(vault.address);
+            const usdcBalance1 = await usdc.balanceOf(gmxPlugin.address);
+            const wntBalance1 = await wnt.balanceOf(gmxPlugin.address);
+            expect(wntBalance).to.equal("0");
+            expect(wntBalance1).to.equal("0");
+        
+            // Checking if the market token amount matches the expected value
             expect(marketTokenAmountAfter).eq("6000000000000000000000"); //6000 GM token
-        })
+        });
     })
 
     describe("AddWithdrawalRequest", async () => {
@@ -394,6 +433,47 @@ describe("Vault Test", () => {
 
             withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
             expect(withdrawalKeys.length).to.equal(1);
+
+            const lpTokenBalanceAfter = await vault.balanceOf(user0.address);
+            const lpTokenBalanceInVaultAfter = await vault.balanceOf(vault.address);
+
+            expect(lpTokenBalanceInVaultAfter).to.equal(6000000000);
+            expect(lpTokenBalanceAfter).to.be.equal(0);
+        })
+        it("Cancel Withdrawal", async () => {
+            withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+            expect(withdrawalKeys.length).to.equal(1);
+
+            const payload = ethers.utils.defaultAbiCoder.encode(['uint8', 'bytes32'],[State.Withdrawal, withdrawalKeys[0]]);
+            const lpBalanceBefore = await vault.balanceOf(user0.address);
+            const lpInVault = await vault.balanceOf(vault.address);
+            
+            await vault.execute(1, ActionType.CancelAction, payload);
+            withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+            expect(withdrawalKeys.length).to.equal(0);
+
+            const lpBalanceAfter = await vault.balanceOf(user0.address);
+
+            expect(lpInVault).to.equal(6000000000);
+            expect(lpBalanceBefore).to.equal(0);
+            expect(lpBalanceAfter).to.equal(6000000000);
+
+
+        })
+        it("addWithdrawalRequest", async () => {
+            withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+
+            const lpTokenBalanceBefore = await vault.balanceOf(user0.address);
+            const lpTokenBalanceInVaultBefore = await vault.balanceOf(vault.address);
+            expect(lpTokenBalanceInVaultBefore).to.equal(0);
+            
+            const payload = ethers.utils.defaultAbiCoder.encode(['uint256', 'uint256'],[0, 0]);
+            await vault.connect(user0).approve(vault.address, lpTokenBalanceBefore);
+            await vault.connect(user0).addWithdrawalRequest(lpTokenBalanceBefore, 1, 1, payload);
+
+            withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+            expect(withdrawalKeys.length).to.equal(1);
+
             const lpTokenBalanceAfter = await vault.balanceOf(user0.address);
             const lpTokenBalanceInVaultAfter = await vault.balanceOf(vault.address);
 
@@ -462,12 +542,218 @@ describe("Vault Test", () => {
             expect(usdcBalanceAfter - usdcBalanceBefore).to.be.equal(1000000000);
             expect(wntBalanceAfter - wntBalanceBefore).to.be.equal(1000000000000000000);
             const lpTokenBalanceInVaultAfter = await vault.balanceOf(vault.address);
+            
             withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+            expect(withdrawalKeys.length).to.equal(0);
 
             expect(lpTokenBalanceInVaultAfter).to.be.equal(0);
-            expect(withdrawalKeys.length).to.equal(0);
         })
     })
+
+    describe("addDepositRequest to selected Pool", async () => {
+        let minGmAmount: any = 0;
+        let payload = "";
+        before(async () => {
+            await vault.connect(wallet).setTokenPriceConsumer(tokenPriceConsumer.address);
+            await vault.connect(wallet).setExecutionFee(1000000000000000, 0);
+            await vault.connect(wallet).selectPluginAndPool(1, 1);
+
+        })
+
+        it("should add a deposit request and mint LP tokens when called with valid parameters", async function () {
+            const usdcAmount = ethers.utils.parseUnits("1000", 6);
+            const wntAmount = ethers.utils.parseUnits("1", 18);
+            await usdc.mint(user0.address, usdcAmount);
+            await wnt.mint(user0.address, wntAmount);
+
+            // Call the addDepositRequest function with valid parameters
+            await usdc.connect(user0).approve(vault.address, usdcAmount);
+            await wnt.connect(user0).approve(vault.address, wntAmount);
+            minGmAmount = ethers.utils.parseEther("1000");
+            payload = ethers.utils.defaultAbiCoder.encode(['uint256'], [minGmAmount]);
+
+            await vault.connect(user0).addDepositRequest(usdc.address, usdcAmount, payload, {value: 1000000000000000});
+
+            // Getting the current block and excute deposit
+            let block = await provider.getBlock((await provider.getBlockNumber()));
+            await executeDeposit(fixture, block);
+
+            // Check if the user's LP token balance has increased
+            let lpTokenBalance = await vault.balanceOf(user0.address);
+            expect(lpTokenBalance).to.be.equal(1000000000);
+      
+            let poolTokenInfo = await vault.getPoolTokenInfo(1, 1);
+            expect(poolTokenInfo.balance).to.equal("1000000000000000000000");
+
+            minGmAmount = ethers.utils.parseEther("5000");
+            payload = ethers.utils.defaultAbiCoder.encode(['uint256'], [minGmAmount]);
+            await vault.connect(user0).addDepositRequest(wnt.address, wntAmount, payload, {value: 1000000000000000});
+
+            // Getting the current block and excute deposit
+            block = await provider.getBlock((await provider.getBlockNumber()));
+            await executeDeposit(fixture, block);
+
+            poolTokenInfo = await vault.getPoolTokenInfo(1, 1);
+            expect(poolTokenInfo.balance).to.equal("6000000000000000000000");
+
+
+            lpTokenBalance = await vault.balanceOf(user0.address);
+            expect(lpTokenBalance).to.be.equal(6000_000000);
+        });
+      
+        it("should revert if the token is not an allowed deposit token", async function () {
+            const nonAllowedToken = signer9;
+            const tokenAmount = ethers.utils.parseEther("100");
+
+            minGmAmount = 0;
+            payload = ethers.utils.defaultAbiCoder.encode(['uint256'], [minGmAmount]);
+        
+            // Call the addDepositRequest function with a non-allowed token and expect it to revert
+            await expect(vault.connect(user0).addDepositRequest(nonAllowedToken.address, tokenAmount, payload, {value: 1000000000000000}))
+                .to.be.revertedWith("Vault: Invalid token");
+        });
+      
+        it("should revert if the token amount is zero", async function () {
+            minGmAmount = 0;
+            payload = ethers.utils.defaultAbiCoder.encode(['uint256'], [minGmAmount]);
+
+            // Call the addDepositRequest function with zero token amount and expect it to revert
+            await expect(vault.connect(user0).addDepositRequest(usdc.address, 0, payload, {value: 1000000000000000}))
+                .to.be.revertedWith("Vault: Invalid token amount");
+            });
+    })
+    describe("AddWithdrawalRequest", async () => {
+        let withdrawalKeys = [];
+        it("addWithdrawalRequest", async () => {
+            withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+
+            const lpTokenBalanceBefore = await vault.balanceOf(user0.address);
+            const lpTokenBalanceInVaultBefore = await vault.balanceOf(vault.address);
+            expect(lpTokenBalanceInVaultBefore).to.equal(0);
+            
+            const payload = ethers.utils.defaultAbiCoder.encode(['uint256', 'uint256'],[0, 0]);
+            await vault.connect(user0).approve(vault.address, lpTokenBalanceBefore);
+            await vault.connect(user0).addWithdrawalRequest(lpTokenBalanceBefore, 1, 1, payload);
+
+            withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+            expect(withdrawalKeys.length).to.equal(1);
+
+            const lpTokenBalanceAfter = await vault.balanceOf(user0.address);
+            const lpTokenBalanceInVaultAfter = await vault.balanceOf(vault.address);
+
+            expect(lpTokenBalanceInVaultAfter).to.equal(6000000000);
+            expect(lpTokenBalanceAfter).to.be.equal(0);
+        })
+        it("Cancel Withdrawal", async () => {
+            withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+            expect(withdrawalKeys.length).to.equal(1);
+
+            const payload = ethers.utils.defaultAbiCoder.encode(['uint8', 'bytes32'],[State.Withdrawal, withdrawalKeys[0]]);
+            const lpBalanceBefore = await vault.balanceOf(user0.address);
+            const lpInVault = await vault.balanceOf(vault.address);
+            
+            await vault.execute(1, ActionType.CancelAction, payload);
+            withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+            expect(withdrawalKeys.length).to.equal(0);
+
+            const lpBalanceAfter = await vault.balanceOf(user0.address);
+
+            expect(lpInVault).to.equal(6000000000);
+            expect(lpBalanceBefore).to.equal(0);
+            expect(lpBalanceAfter).to.equal(6000000000);
+
+
+        })
+        it("addWithdrawalRequest", async () => {
+            withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+
+            const lpTokenBalanceBefore = await vault.balanceOf(user0.address);
+            const lpTokenBalanceInVaultBefore = await vault.balanceOf(vault.address);
+            expect(lpTokenBalanceInVaultBefore).to.equal(0);
+            
+            const payload = ethers.utils.defaultAbiCoder.encode(['uint256', 'uint256'],[0, 0]);
+            await vault.connect(user0).approve(vault.address, lpTokenBalanceBefore);
+            await vault.connect(user0).addWithdrawalRequest(lpTokenBalanceBefore, 1, 1, payload);
+
+            withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+            expect(withdrawalKeys.length).to.equal(1);
+
+            const lpTokenBalanceAfter = await vault.balanceOf(user0.address);
+            const lpTokenBalanceInVaultAfter = await vault.balanceOf(vault.address);
+
+            expect(lpTokenBalanceInVaultAfter).to.equal(6000000000);
+            expect(lpTokenBalanceAfter).to.be.equal(0);
+        })
+        it("Execute Withdrawal", async() => {
+            const block = await provider.getBlock((await provider.getBlockNumber()));
+
+            const signerInfo = getSignerInfo([0, 1, 2, 3, 4, 7, 9]);
+
+            const wntMinPrices = [expandDecimals(5000, 4), expandDecimals(5000, 4), expandDecimals(5000, 4), expandDecimals(5000, 4), expandDecimals(5000, 4), expandDecimals(5000, 4), expandDecimals(5000, 4)];
+            const wntMaxPrices = [expandDecimals(5000, 4), expandDecimals(5000, 4), expandDecimals(5000, 4), expandDecimals(5000, 4), expandDecimals(5000, 4), expandDecimals(5000, 4), expandDecimals(5000, 4)];
+
+            const usdcMinPrices = [ expandDecimals(1, 6),  expandDecimals(1, 6),  expandDecimals(1, 6),  expandDecimals(1, 6),  expandDecimals(1, 6),  expandDecimals(1, 6),  expandDecimals(1, 6)];
+            const usdcMaxPrices = [ expandDecimals(1, 6),  expandDecimals(1, 6),  expandDecimals(1, 6),  expandDecimals(1, 6),  expandDecimals(1, 6),  expandDecimals(1, 6),  expandDecimals(1, 6)];
+            const wntSignatures = await signPrices({
+                signers: [signer0, signer1, signer2, signer3, signer4, signer7, signer9],
+                salt: oracleSalt,
+                minOracleBlockNumber: block.number,
+                maxOracleBlockNumber: block.number,
+                oracleTimestamp: block.timestamp,
+                blockHash: block.hash,
+                token: wnt.address,
+                tokenOracleType: TOKEN_ORACLE_TYPES.DEFAULT,
+                precision: 8,
+                minPrices: wntMinPrices,
+                maxPrices: wntMaxPrices,
+            });
+
+            const usdcSignatures = await signPrices({
+                signers: [signer0, signer1, signer2, signer3, signer4, signer7, signer9],
+                salt: oracleSalt,
+                minOracleBlockNumber: block.number,
+                maxOracleBlockNumber: block.number,
+                oracleTimestamp: block.timestamp,
+                blockHash: block.hash,
+                token: usdc.address,
+                tokenOracleType: TOKEN_ORACLE_TYPES.DEFAULT,
+                precision: 18,
+                minPrices: usdcMinPrices,
+                maxPrices: usdcMaxPrices,
+            });
+
+            const params = {
+                priceFeedTokens: [],
+                signerInfo,
+                tokens: [wnt.address, usdc.address],
+                compactedMinOracleBlockNumbers: getCompactedOracleBlockNumbers([block.number, block.number]),
+                compactedMaxOracleBlockNumbers: getCompactedOracleBlockNumbers([block.number, block.number]),
+                compactedOracleTimestamps: getCompactedOracleTimestamps([block.timestamp, block.timestamp]),
+                compactedDecimals: getCompactedDecimals([8, 18]),
+                compactedMinPrices: getCompactedPrices(wntMinPrices.concat(usdcMinPrices)),
+                compactedMinPricesIndexes: getCompactedPriceIndexes([0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6]),
+                compactedMaxPrices: getCompactedPrices(wntMaxPrices.concat(usdcMaxPrices)),
+                compactedMaxPricesIndexes: getCompactedPriceIndexes([0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6]),
+                signatures: wntSignatures.concat(usdcSignatures),
+            };
+
+            let usdcBalanceBefore = await usdc.balanceOf(user0.address);
+            let wntBalanceBefore = await wnt.balanceOf(user0.address);
+            await withdrawalHandler.executeWithdrawal(withdrawalKeys[0], params);
+            let usdcBalanceAfter = await usdc.balanceOf(user0.address);
+            let wntBalanceAfter = await wnt.balanceOf(user0.address);
+
+            expect(usdcBalanceAfter - usdcBalanceBefore).to.be.equal(1000000000);
+            expect(wntBalanceAfter - wntBalanceBefore).to.be.equal(1000000000000000000);
+            const lpTokenBalanceInVaultAfter = await vault.balanceOf(vault.address);
+            
+            withdrawalKeys = await gmxCallback.getKeys(State.Withdrawal);
+            expect(withdrawalKeys.length).to.equal(0);
+
+            expect(lpTokenBalanceInVaultAfter).to.be.equal(0);
+        })
+    })
+    
 
     describe("UpdateLiquidityProviderRate", async () => {
         before(async () => {
@@ -475,9 +761,11 @@ describe("Vault Test", () => {
             await vault.connect(wallet).setExecutionFee(1000000000000000, 0);
             await vault.connect(wallet).setProtocolFeePercentage(500); // 5 %
             await vault.connect(wallet).setTreasury(user8.address);
+            await vault.connect(wallet).selectPluginAndPool(0, 0);
         })
         it("addDepositRequest", async () => {
             let total = await vault.totalAssetInUsd();
+            expect(total).to.equal("1000000000000000000000000000000000000");
             const usdcAmount = ethers.utils.parseUnits("1000", 6);
             const wntAmount  = ethers.utils.parseUnits("1", 18);
             await usdc.mint(user0.address, usdcAmount);
@@ -487,10 +775,15 @@ describe("Vault Test", () => {
             await usdc.connect(user0).approve(vault.address, usdcAmount);
             await wnt.connect(user0).approve(vault.address, wntAmount);
 
-            await vault.connect(user0).addDepositRequest(usdc.address, usdcAmount, {value: 1000000000000000});
+            let minGmAmount = ethers.utils.parseEther("0");
+            let payload = ethers.utils.defaultAbiCoder.encode(['uint256'], [minGmAmount]);
+            await vault.connect(user0).addDepositRequest(usdc.address, usdcAmount, payload, {value: 1000000000000000});
+
+            const lpBalanceuser0 = await vault.balanceOf(user0.address);
+            expect(lpBalanceuser0).to.equal("1000000000");
 
             total = await vault.totalAssetInUsd();
-            expect(total).to.equal("1000000000000000000000000000000000000000");
+            expect(total).to.equal("1001000000000000000000000000000000000000");
 
             // Check if the user's LP token balance has increased
             let lpTokenBalance = await vault.balanceOf(user0.address);
@@ -500,30 +793,35 @@ describe("Vault Test", () => {
             const contractTokenBalance = await usdc.balanceOf(vault.address);
             expect(contractTokenBalance).to.equal(usdcAmount);
 
-            await vault.connect(user0).addDepositRequest(wnt.address, wntAmount, {value: 1000000000000000});
+            minGmAmount = ethers.utils.parseEther("5000");
+            payload = ethers.utils.defaultAbiCoder.encode(['uint256'], [minGmAmount]);
+            await vault.connect(user0).addDepositRequest(wnt.address, wntAmount, payload, {value: 1000000000000000});
             lpTokenBalance = await vault.balanceOf(user0.address);
             expect(lpTokenBalance).to.be.equal(6000_000000);
 
             total = await vault.totalAssetInUsd();
-            expect(total).to.equal("6000000000000000000000000000000000000000");
+            expect(total).to.equal("6001000000000000000000000000000000000000");
         })
 
         it("updateLiquidityProviderRate", async () => {
-            await usdc.mint(vault.address, parseUnits("1000", 6));
+            await usdc.mint(vault.address, parseUnits("3000", 6));
             let total = await vault.totalAssetInUsd();
-            expect(total).to.equal("7000000000000000000000000000000000000000");
+            expect(total).to.equal("9001000000000000000000000000000000000000");
 
             let lpRate = await vault.lpRate();
             let protocolFeeInVault = await vault.protocolFeeInVault();
             expect(lpRate).to.equal("1000000000000000000");
             expect(protocolFeeInVault).to.equal(0);
 
+            const currentRate = await vault.getCurrentLiquidityProviderRate();
+            expect(currentRate).to.equal("1499916680553241126");
+
             await vault.updateLiquidityProviderRate();
             protocolFeeInVault = await vault.protocolFeeInVault();
 
             lpRate = await vault.lpRate();
-            expect(lpRate).to.equal("1158333333333333333");
-            expect(protocolFeeInVault).to.equal("49999999999999999800000000000000000000");
+            expect(lpRate).to.equal("1474920846525579070");
+            expect(protocolFeeInVault).to.equal("149999999999999999856300000000000000000");
         })
 
         it("withdrawProtocolFee", async () => {
@@ -533,7 +831,7 @@ describe("Vault Test", () => {
             await vault.withdrawProtocolFee(usdc.address);
             usdcBalance = await usdc.balanceOf(user8.address);
             
-            expect(usdcBalance).to.equal(49999999);
+            expect(usdcBalance).to.equal(149999999);
             const protocolFeeInVault = await vault.protocolFeeInVault();
             expect(protocolFeeInVault).to.equal(0);
         })
@@ -547,4 +845,4 @@ describe("Vault Test", () => {
             expect(gmxBalanceAfter - gmxBalanceBefore).to.equal(2000000000000000);
         })
     })
-});
+}); 

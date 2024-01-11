@@ -17,13 +17,16 @@ export const deployContracts = async () => {
     const fixture: any = await deployFixture();
     const accountList = await ethers.getSigners();
     const [ wallet ] = accountList;
+    const { provider } = ethers;
 
-    const tokenPriceConsumer = await deployNew("TokenPriceConsumer", [[], []]);
-    const usdcMockAggregator = await deployNew("MockAggregator", [8, "usdc", 1, "100000000", 0, 0, 0, "100000000"]);
-    const ethMockAggregator = await deployNew("MockAggregator", [18, "wnt", 1, "5000000000000000000000", 0, 0, 0, "5000000000000000000000"]);
+    const block = await provider.getBlock((await provider.getBlockNumber()));
 
-    await tokenPriceConsumer.addPriceFeed(fixture.contracts.usdc.address, usdcMockAggregator.address);
-    await tokenPriceConsumer.addPriceFeed(fixture.contracts.wnt.address, ethMockAggregator.address);
+    const tokenPriceConsumer = await deployNew("TokenPriceConsumer", [[], [],[]]);
+    const usdcMockAggregator = await deployNew("MockAggregator", [8, "usdc", 1, "100000000", 1, 0, block.timestamp, "100000000"]);
+    const ethMockAggregator = await deployNew("MockAggregator", [18, "wnt", 1, "5000000000000000000000", 1, 0, block.timestamp, "5000000000000000000000"]);
+
+    await tokenPriceConsumer.addPriceFeed(fixture.contracts.usdc.address, usdcMockAggregator.address, 1000000);
+    await tokenPriceConsumer.addPriceFeed(fixture.contracts.wnt.address, ethMockAggregator.address, 1000000);
 
     // vault Plugin setting
     const vault = await deployNew("Vault", []);

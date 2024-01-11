@@ -20,31 +20,24 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
     using SafeERC20 for IERC20;
     using SafeMath for uint256;
 
-    // Enum representing the status of the protocol.
-    enum Status {
-        Normal,   // Indicates normal operational status.
-        Pending  // Indicates pending or transitional status.
-    }
-
-    // Struct defining the properties of a Plugin.
-    struct Plugin {
-        address pluginAddress;  // Address of the plugin contract.
-        uint8 pluginId;       // Unique identifier for the plugin.
-    }
-
-    // Struct containing withdrawal information.
-    struct WithdrawalInfo {
-        address userAddress;     // Address of the user initiating the withdrawal.
-        address tokenAddress;    // Address of the token being withdrawn.
-        uint256 lpAmount;        // Amount of LP (Liquidity Provider) tokens to be withdrawn.
-    }
-
     // Constant representing the number of decimals for the MOZAIC token.
     uint256 public constant MOZAIC_DECIMALS = 6;
 
     // Constant representing the number of decimals for the ASSET.
     uint256 public constant ASSET_DECIMALS = 36;
 
+    // A constant representing the denominator for basis points (BP). Used for percentage calculations.
+    uint256 public constant BP_DENOMINATOR = 1e4;
+
+    // A constant representing the maximum fee percentage allowed (1000 basis points or 10% in this case).
+    uint256 public constant MAX_FEE = 1e3;
+
+    // Struct defining the properties of a Plugin.
+    struct Plugin {
+        address pluginAddress;  // Address of the plugin contract.
+        uint8 pluginId;       // Unique identifier for the plugin.
+    }
+    
     /* ========== STATE VARIABLES ========== */
     // Stores the address of the master contract.
     address public master;
@@ -79,19 +72,27 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
     // Stores the ID of the currently selected pool.
     uint8 public selectedPoolId;
 
+    // An array of addresses representing users who can lock assets in the vault.
     address[] public vaultLockers;
 
+    // An array of addresses representing managers who have control over the vault.
     address[] public vaultManagers;
 
+    // A rate used to convert LP (Liquidity Provider) tokens to a standard decimal format (18 decimals in this case).
     uint256 public lpRate = 1e18;
+
+    // The percentage of fees collected by the protocol for each transaction.
     uint256 public protocolFeePercentage;
+
+    // The total protocol fee held in the vault.
     uint256 public protocolFeeInVault;
 
+    // The minimum execution fee required when depositing funds into the vault.
     uint256 public depositMinExecFee;
+
+    // The minimum execution fee required when withdrawing funds from the vault.
     uint256 public withdrawMinExecFee;
 
-    uint256 public constant BP_DENOMINATOR = 1e4;
-    uint256 public constant MAX_FEE = 1e3;
 
     /* ========== EVENTS ========== */
     event AddPlugin(uint8 _pluginId, address _pluginAddress);
@@ -102,17 +103,16 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
     event SetTreasury(address payable treasury);
     event SetProtocolFeePercentage(uint256 _protocolFeePercentage);
     event SetExecutionFee(uint256 _depositMinExecFee, uint256 _withdrawMinExecFee);
-
+    event SetVaultLockers(address[] _vaultLockers);
+    event SetVaultManagers(address[] _vaultManagers);
+    event UpdateLiquidityProviderRate(uint256 _previousRate, uint256 _lpRate);
     event AddAcceptedToken(address _token);
     event RemoveAcceptedToken(address _token);
     event AddDepositAllowedToken(address _token);
     event RemoveDepositAllowedToken(address _token);
-
     event AddDepositRequest(address _token, uint256 _amount);
-    event AddWithdrawRequest(WithdrawalInfo _info);
     event SelectPluginAndPool(uint8 _pluginId, uint8 _poolId);
     event ApproveTokens(uint8 _pluginId, address[] _tokens, uint256[] _amounts);
-
     event WithdrawProtocolFee(address _token, uint256 _amount);
 
     /* ========== MODIFIERS ========== */
@@ -122,12 +122,7 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         _;
     }
 
-    // Modifier allowing only the master contract or the vault itself to execute the function.
-    modifier onlyMasterOrSelf() {
-        require(msg.sender == master || msg.sender == address(this), "Vault: caller must be master or self");
-        _;
-    }
-
+    // Modifier allowing only the vault lockers to execute the function.
     modifier onlyVaultLockers() {
         bool isVaultLocker = false;
         for(uint256 i  = 0; i < vaultLockers.length; i++) {
@@ -140,6 +135,7 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         _;
     }
 
+    // Modifier allowing only the vault managers to execute the function.
     modifier onlyVaultManagers() {
         bool isVaultManager = false;
         for(uint256 i  = 0; i < vaultManagers.length; i++) {
@@ -148,7 +144,7 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
                 break;
             }
         }
-        require(isVaultManager, "Vault: Invalid vault Manger");
+        require(isVaultManager, "Vault: Invalid vault manager");
         _;
     }
 
@@ -201,9 +197,6 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
 
     // Allows the master contract to select a plugin and pool.
     function selectPluginAndPool(uint8 _pluginId, uint8 _poolId) onlyMaster public {
-        // Ensure that both the pluginId and poolId are valid and not zero.
-        require(_pluginId != 0 && _poolId != 0, "Vault: Invalid pluginId or poolId");
-
         // Set the selectedPluginId and selectedPoolId to the provided values.
         selectedPluginId = _pluginId;
         selectedPoolId = _poolId;
@@ -323,24 +316,42 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         emit RemovePlugin(_pluginId);
     }
 
+    // Function to set the protocol fee percentage. Only callable by the owner of the contract.
     function setProtocolFeePercentage(uint256 _protocolFeePercentage) external onlyOwner {
+        // Ensure that the provided protocol fee percentage does not exceed the maximum allowed fee.
         require(_protocolFeePercentage <= MAX_FEE, "Vault: protocol fee exceeds the max fee");
+        
+        // Update the protocol fee percentage.
         protocolFeePercentage = _protocolFeePercentage;
+
+        // Emit an event to log the change in protocol fee percentage.
         emit SetProtocolFeePercentage(_protocolFeePercentage);
     }
 
+    // Function to set the addresses of users who can lock assets in the vault. Only callable by the owner.
     function setVaultLockers(address[] memory _vaultLockers) external onlyOwner {
+        // Update the array of vault lockers with the provided addresses.
         vaultLockers = _vaultLockers;
+
+        // Emit an event to log the update of vault lockers with the provided addresses.
+        emit SetVaultLockers(_vaultLockers);
     }
 
+    // Function to set the addresses of managers who have control over the vault. Only callable by the owner.
     function setVaultManagers(address[] memory _vaultManagers) external onlyOwner {
+        // Update the array of vault managers with the provided addresses.
         vaultManagers = _vaultManagers;
+
+        // Emit an event to log the update of vault managers with the provided addresses.
+        emit SetVaultManagers(_vaultManagers);
+
     }
+
 
     /* ========== USER FUNCTIONS ========== */
     
     // Allows users to initiate a deposit request by converting tokens to LP tokens and staking them into the selected pool.
-    function addDepositRequest(address _token, uint256 _tokenAmount) external payable nonReentrant {
+    function addDepositRequest(address _token, uint256 _tokenAmount, bytes memory _payload) external payable nonReentrant {
         require(getVaultStatus() == true, "Vault: Vault is locked");
 
         require(msg.value >= depositMinExecFee, "Vault: Insufficient execution fee");
@@ -372,12 +383,12 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         emit AddDepositRequest(_token, _tokenAmount);
 
         // Stake the minted LP tokens to the selected pool.
-        stakeToSelectedPool(_token, _tokenAmount);
+        stakeToSelectedPool(_token, _tokenAmount, _payload);
     }
 
 
     // Internal function to stake a specified token amount to the selected pool using the configured plugin.
-    function stakeToSelectedPool(address _token, uint256 _tokenAmount) internal {
+    function stakeToSelectedPool(address _token, uint256 _tokenAmount, bytes memory _payload) internal {
         // Retrieve the list of allowed tokens for the selected plugin and pool.
         address[] memory allowedTokens = getTokensByPluginAndPoolId(selectedPluginId, selectedPoolId);
 
@@ -389,62 +400,100 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
                 _amounts[i] = _tokenAmount;
 
                 // Encode the payload for the 'Stake' action using the selected plugin and pool.
-                bytes memory payload = abi.encode(uint8(selectedPoolId), allowedTokens, _amounts);
+                bytes memory payload = abi.encode(uint8(selectedPoolId), allowedTokens, _amounts, _payload);
 
-                // Execute the 'Stake' action on the selected plugin with the encoded payload.
-                this.execute(uint8(selectedPluginId), IPlugin.ActionType.Stake, payload);
+                // Ensure that the specified plugin exists.
+                require(pluginIdToIndex[selectedPluginId] != 0, "Plugin with this ID does not exist");
+
+                // Retrieve the plugin address based on the provided plugin ID.
+                address plugin = plugins[pluginIdToIndex[selectedPluginId] - 1].pluginAddress;
+
+                // Increase the allowance for the plugin to spend the specified token amount.
+                IERC20(allowedTokens[i]).safeIncreaseAllowance(plugin, _tokenAmount);
+
+                // Execute the specified action on the plugin with the provided payload.
+                IPlugin(plugin).execute(IPlugin.ActionType.Stake, payload);
+                
+                // Exit the function after successfully staking the token.
                 return;
             }
         }
     }
 
+    // Function to add a withdrawal request for a specified LP token amount from a selected pool using a specified plugin.
     function addWithdrawalRequest(uint256 _lpAmount, uint8 _pluginId, uint8 _poolId, bytes memory payload) external payable {
+        // Ensure that the vault is not locked before processing withdrawal requests.
         require(getVaultStatus() == true, "Vault: Vault is locked");
 
+        // Ensure that the user has provided sufficient execution fee for the withdrawal.
         require(msg.value >= withdrawMinExecFee, "Vault: Insufficient execution fee");
 
-        // Ensure a valid and positive LP token amount is provided.
+        // Ensure a valid and positive LP token amount is provided for withdrawal.
         require(_lpAmount > 0, "Vault: Invalid LP token amount");
 
         // Transfer the specified amount of LP tokens from the user to the contract.
         this.transferFrom(msg.sender, address(this), _lpAmount);
 
-        // Convert LP tokens to USD value.
+        // Convert the LP token amount to its equivalent USD value.
         uint256 usdAmountToWithdraw = convertLPToAsset(_lpAmount);
 
-        (, uint8 poolTokenDecimals) = getPoolTokenInfo(_pluginId, _poolId);
+        // Retrieve information about the selected pool token, including its decimals and price.
+        (, uint8 poolTokenDecimals, ) = getPoolTokenInfo(_pluginId, _poolId);
 
+        // Get the current price of the pool token.
         uint256 poolTokenPrice = getPoolTokenPrice(_pluginId, _poolId);
-        
+
+        // Calculate the amount of pool tokens equivalent to the USD value of the LP token withdrawal.
         uint256 poolTokenAmount = convertDecimals(usdAmountToWithdraw, 6, poolTokenDecimals) / poolTokenPrice;
 
+        // Encode the payload for the 'Unstake' action using the specified pool and LP token details.
         bytes memory _payload = abi.encode(_poolId, poolTokenAmount, _lpAmount, msg.sender, payload);
-        
-        this.execute(_pluginId, IPlugin.ActionType.Unstake, _payload);
+
+        // Ensure that the specified plugin exists.
+        require(pluginIdToIndex[_pluginId] != 0, "Plugin with this ID does not exist");
+
+        // Retrieve the plugin address based on the provided plugin ID.
+        address plugin = plugins[pluginIdToIndex[_pluginId] - 1].pluginAddress;
+
+        // Execute the 'Unstake' action on the plugin with the provided payload.
+        IPlugin(plugin).execute(IPlugin.ActionType.Unstake, _payload);
     }
 
+    // Function to get the current price of the pool token for a specified pool using a specified plugin.
     function getPoolTokenPrice(uint8 _pluginId, uint8 _poolId) public view returns (uint256) {
         // Ensure that the specified plugin exists.
         require(pluginIdToIndex[_pluginId] != 0, "Plugin with this ID does not exist");
 
         // Retrieve the plugin address based on the provided plugin ID.
         address plugin = plugins[pluginIdToIndex[_pluginId] - 1].pluginAddress;
-        return uint256(IPlugin(plugin).getPoolTokenPrice(_poolId, true));
+
+        // Call the external function on the specified plugin to get the pool token price.
+        int256 tokenPrice = IPlugin(plugin).getPoolTokenPrice(_poolId, true);
+
+        // Ensure that the retrieved token price is positive.
+        require(tokenPrice > 0, "Vault: Pool token price is negative.");
+
+        // Convert the token price to an unsigned integer and return it.
+        return uint256(tokenPrice);
     }
 
-    function getPoolTokenInfo(uint8 _pluginId, uint8 _poolId) public view returns (address _token, uint8 _decimals) {
+    // Function to get information about the pool token, including its address, decimals, and balance for a specified pool using a specified plugin.
+    function getPoolTokenInfo(uint8 _pluginId, uint8 _poolId) public view returns (address token, uint8 decimal, uint256 balance) {
         // Ensure that the specified plugin exists.
         require(pluginIdToIndex[_pluginId] != 0, "Plugin with this ID does not exist");
 
         // Retrieve the plugin address based on the provided plugin ID.
         address plugin = plugins[pluginIdToIndex[_pluginId] - 1].pluginAddress;
+
+        // Call the external function on the specified plugin to get the pool token information.
         return IPlugin(plugin).getPoolTokenInfo(_poolId);
     }
+
     
     /* ========== MASTER FUNCTIONS ========== */
     
-    // Allows the master contract or the vault itself to execute actions on a specified plugin.
-    function execute(uint8 _pluginId, IPlugin.ActionType _actionType, bytes memory _payload) public onlyMasterOrSelf nonReentrant {
+    // Allows the master contract to execute actions on a specified plugin.
+    function execute(uint8 _pluginId, IPlugin.ActionType _actionType, bytes memory _payload) public onlyMaster nonReentrant {
         // Ensure that the specified plugin exists.
         require(pluginIdToIndex[_pluginId] != 0, "Plugin with this ID does not exist");
 
@@ -453,7 +502,7 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
 
         // If the action type is 'Stake', approve tokens for staking according to the payload.
         if (_actionType == IPlugin.ActionType.Stake) {
-            (, address[] memory _tokens, uint256[] memory _amounts, ) = abi.decode(_payload, (uint8, address[], uint256[], uint256));
+            (, address[] memory _tokens, uint256[] memory _amounts, ) = abi.decode(_payload, (uint8, address[], uint256[], bytes));
             require(_tokens.length == _amounts.length, "Vault: Lists must have the same length");
 
             // Iterate through the tokens and approve them for staking.
@@ -462,6 +511,11 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
                     IERC20(_tokens[i]).safeIncreaseAllowance(plugin, _amounts[i]);
                 }
             }
+        } else if (_actionType == IPlugin.ActionType.Unstake) {
+            ( , , , address receiver, ) = abi.decode(_payload, (uint8, uint256, uint256, address, bytes));
+
+            // Ensure that the receiver address is the vault itself.
+            require(receiver == address(this), "Invalid receiver");
         }
 
         // Execute the specified action on the plugin with the provided payload.
@@ -472,7 +526,7 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
     }
 
     // Allows the master contract to approve tokens for a specified plugin based on the provided payload.
-    function approveTokens(uint8 _pluginId, bytes memory _payload) external onlyMaster nonReentrant {
+    function approveTokens(uint8 _pluginId, address[] memory _tokens, uint256[] memory _amounts) external onlyMaster nonReentrant {
         // Ensure that the specified plugin exists.
         require(pluginIdToIndex[_pluginId] != 0, "Plugin with this ID does not exist");
 
@@ -480,7 +534,7 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         address plugin = plugins[pluginIdToIndex[_pluginId] - 1].pluginAddress;
 
         // Decode the payload to obtain the list of tokens and corresponding amounts to approve.
-        (address[] memory _tokens, uint256[] memory _amounts) = abi.decode(_payload, (address[], uint256[]));
+        // (address[] memory _tokens, uint256[] memory _amounts) = abi.decode(_payload, (address[], uint256[]));
         require(_tokens.length == _amounts.length, "Vault: Lists must have the same length");
 
         // Iterate through the tokens and approve them for the plugin.
@@ -500,18 +554,21 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         if (currentRate > previousRate) {
             // Calculate the change in rate and update total profit
             uint256 deltaRate = currentRate - previousRate;
+    
             uint256 totalProfit = convertDecimals(deltaRate * totalSupply(), 18 + MOZAIC_DECIMALS, ASSET_DECIMALS);
             
             // Calculate protocol fee        
             uint256 protocolFee = totalProfit.mul(protocolFeePercentage).div(BP_DENOMINATOR);
-            
             protocolFeeInVault += protocolFee;
+
             // Update the LP rates
             lpRate = getCurrentLiquidityProviderRate();
         } else {
             // Update the LP rates
             lpRate = currentRate;
         }
+
+        emit UpdateLiquidityProviderRate(previousRate, lpRate);
     }
 
     // Withdraws protocol fees stored in the vault for a specific token.
@@ -527,12 +584,14 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         // Determine the transfer amount, ensuring it doesn't exceed the token balance
         uint256 transferAmount = tokenBalance >= tokenAmount ? tokenAmount : tokenBalance;
 
-        // Update the protocol fee in the vault after the withdrawal
-        protocolFeeInVault = protocolFeeInVault.sub(protocolFeeInVault.mul(transferAmount).div(tokenAmount));
+        if(tokenAmount != 0) {        
+            // Update the protocol fee in the vault after the withdrawal
+            protocolFeeInVault = protocolFeeInVault.sub(protocolFeeInVault.mul(transferAmount).div(tokenAmount));
 
-        // Safely transfer the tokens to the treasury address
-        IERC20(_token).safeTransfer(treasury, transferAmount);
-
+            // Safely transfer the tokens to the treasury address
+            IERC20(_token).safeTransfer(treasury, transferAmount);
+        }
+        
         // Emit an event to log the withdrawal
         emit WithdrawProtocolFee(_token, transferAmount);
     }
@@ -601,7 +660,7 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         }
 
         // Return the total calculated asset value.
-        return _totalAsset;
+        return _totalAsset + 10 ** ASSET_DECIMALS;
     }
 
     // Check if a given token is accepted by the vault.
@@ -643,17 +702,25 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         return poolAllowedTokens;
     }
 
+    // Function to get the status of the vault, indicating whether it is locked or unlocked.
     function getVaultStatus() public view returns (bool) {
+        // Initialize the status as true, assuming the vault is initially unlocked.
         bool status = true;
+
+        // Iterate through the array of vault lockers to check their individual status.
         for(uint256 i = 0; i < vaultLockers.length; i++) {
+            // Check the status of the current vault locker.
             if(IVaultLocker(vaultLockers[i]).getLockerStatus() == false) {
+                // If any vault locker reports that it is locked, set the overall vault status to false and exit the loop.
                 status = false;
                 break;
             }
         }
+
+        // Return the overall status of the vault.
         return status;
     }
-    
+
     /* ========== HELPER FUNCTIONS ========== */
 
     // Calculate the USD value of a given token amount based on its price and decimals.
@@ -726,13 +793,24 @@ contract Vault is Ownable, ERC20, ReentrancyGuardUpgradeable {
         return uint8(MOZAIC_DECIMALS);
     }
 
+    // Function to get the total supply of the LP tokens, including an additional fixed supply represented by 10^MOZAIC_DECIMALS.
+    function totalSupply() public view virtual override returns (uint256) {
+        // Retrieve the original total supply from the parent contract and add an additional fixed supply.
+        return super.totalSupply() + 10 ** MOZAIC_DECIMALS;
+    }
+
+    // Function to burn a specified amount of LP tokens. Only callable by vault managers.
     function burnLP(uint256 _lpAmount) external onlyVaultManagers {
+        // Burn the specified amount of LP tokens from the contract's balance.
         _burn(address(this), _lpAmount);
     }
-    
+
+    // Function to transfer a specified amount of LP tokens to a given account. Only callable by vault managers.
     function transferLP(address _account, uint256 _lpAmount) external onlyVaultManagers {
-        transfer(_account, _lpAmount);
+        // Transfer the specified amount of LP tokens from the contract to the target account.
+        this.transfer(_account, _lpAmount);
     }
+
     /* ========== TREASURY FUNCTIONS ========== */
     receive() external payable {}
     // Fallback function is called when msg.data is not empty

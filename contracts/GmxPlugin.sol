@@ -23,6 +23,14 @@ import "hardhat/console.sol";
 contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
     using SafeERC20 for IERC20;
 
+    /* ========== CONSTANTS ========== */
+    // Constant defining the decimal precision for asset values.
+    uint256 public constant ASSET_DECIMALS = 36;
+
+    // Constant defining the decimal precision for market token prices.
+    uint256 public constant MARKET_TOKEN_PRICE_DECIMALS = 30;
+
+    /* ========== STRUCTS ========== */
     // Struct defining configuration parameters for the router.
     struct RouterConfig {
         address exchangeRouter;   // Address of the exchange router contract.
@@ -51,12 +59,10 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
         bool shouldUnwrapNativeToken; // Flag indicating whether native tokens should be unwrapped during Gmx interactions.
     }
 
-    /* ========== CONSTANTS ========== */
-    // Constant defining the decimal precision for asset values.
-    uint256 public constant ASSET_DECIMALS = 36;
-
-    // Constant defining the decimal precision for market token prices.
-    uint256 public constant MARKET_TOKEN_PRICE_DECIMALS = 30;
+    struct PoolValue {
+        uint8 poolId;
+        uint256 poolValue;
+    }
 
     /* ========== STATE VARIABLES ========== */
     // Address of the master contract, controlling the overall functionality.
@@ -97,6 +103,12 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
     // Modifier allowing only the local vault to execute the function.
     modifier onlyVault() {
         require(msg.sender == localVault, "Invalid caller");
+        _;
+    }
+
+    // Modifier allowing only the local vault to execute the function.
+    modifier onlyCallback() {
+        require(msg.sender == gmxParams.callbackContract, "Invalid caller");
         _;
     }
 
@@ -254,11 +266,11 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
     // Function allowing the vault to execute different actions based on the specified action type.
     function execute(ActionType _actionType, bytes calldata _payload) external payable onlyVault nonReentrant {
         // Determine the action type and execute the corresponding logic.
-        if (_actionType == ActionType.Stake) {
+        if (_actionType == ActionType. Stake) {
             // Execute stake action.
             stake(_payload);
         } else if (_actionType == ActionType.Unstake) {
-            // Execute unstake action.
+            // Execute unstake a ction.
             unstake(_payload);
         } else if (_actionType == ActionType.SwapTokens) {
             // Execute token swap action (create order).
@@ -266,6 +278,21 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
         } else if (_actionType == ActionType.CancelAction) {
             // Execute cancel action.
             cancelAction(_payload);
+        }
+    }
+
+    // Transfers all ERC-20 tokens held by this contract to a designated vault.
+    function transferAllTokensToVault() public onlyCallback {
+        // Iterate through all unique tokens stored in the contract
+        for (uint256 i = 0; i < uniqueTokens.length; ++i) {
+            // Get the balance of the current token held by this contract
+            uint256 tokenBalance = IERC20(uniqueTokens[i]).balanceOf(address(this));
+
+            // Check if the token balance is greater than zero
+            if (tokenBalance > 0) {
+                // Safely transfer the entire balance of the current token to the designated vault
+                IERC20(uniqueTokens[i]).safeTransfer(localVault, tokenBalance);
+            }
         }
     }
 
@@ -295,6 +322,33 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
             // Accumulate adjustedAmount to totalAsset.
             totalAsset += adjustedAmount;
         }
+    }
+
+    function getPoolValues() public view returns (PoolValue[] memory){
+         PoolValue[] memory poolValues = new PoolValue[](pools.length); // Initialize the dynamic array
+
+        for (uint256 i = 0; i < pools.length; ++i) {
+            address marketTokenAddress = pools[i].marketToken;
+            uint256 marketTokenBalance = IERC20(marketTokenAddress).balanceOf(address(this));
+            int256 marketTokenPrice = getPoolTokenPrice(pools[i].poolId, true);
+            uint256 adjustedAmount;
+            if (marketTokenPrice > 0) {
+                uint256 amount = marketTokenBalance * uint256(marketTokenPrice);
+
+                // Use IERC20Metadata only once to get decimals.
+                uint256 decimals = IERC20Metadata(marketTokenAddress).decimals() + MARKET_TOKEN_PRICE_DECIMALS;
+
+                adjustedAmount = convertDecimals(amount, decimals, ASSET_DECIMALS);
+            }
+            PoolValue memory data = PoolValue({
+                poolId: pools[i].poolId,
+                poolValue: adjustedAmount
+            });
+
+            poolValues[i] = data; // Assign the value to the array at the correct index
+        }
+
+        return poolValues;
     }
 
     // Function to calculate the USD value of a given token amount based on its price and decimals.
@@ -384,7 +438,8 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
     // Transfers tokens from localVault to the contract and executes buyGMToken function.
     function stake(bytes calldata _payload) internal {
         // Decode payload
-        (uint8 _poolId, address[] memory _tokens, uint256[] memory _amounts, uint256 minGMAmount) = abi.decode(_payload, (uint8, address[], uint256[], uint256));
+        (uint8 _poolId, address[] memory _tokens, uint256[] memory _amounts, bytes memory payload) = abi.decode(_payload, (uint8, address[], uint256[], bytes));
+        (uint256 minGMAmount) = abi.decode(payload, (uint256));
 
         // Validate pool existence
         require(poolExistsMap[_poolId], "GMX: Pool with this poolId does not exist");
@@ -420,7 +475,6 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
     // Decodes the payload and performs the sell operation using sellGMToken function.
     function unstake(bytes calldata _payload) internal {
         // Decode payload
-        // (uint8 poolId, uint256 marketAmount, uint256 minLongTokenAmount, uint256 minShortTokenAmount, address receiver) = abi.decode(_payload, (uint8, uint256, uint256, uint256, address));
         (uint8 poolId, uint256 marketAmount, uint256 lpAmount, address receiver, bytes memory data) = abi.decode(_payload, (uint8, uint256, uint256, address, bytes));
         (uint256 minLongTokenAmount, uint256 minShortTokenAmount) = abi.decode(data, (uint256, uint256));
 
@@ -454,7 +508,7 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
     /* ========== GMX FUNCTIONS ========== */
     // Internal function to buy GM tokens in a specified pool.
     // Handles the approval of token transfers, prepares swap paths, and executes multicall to deposit assets and create GM tokens.
-    function buyGMToken(uint8 _poolId, uint256 _longTokenAmount, uint256 _shortTokenAmount, uint256 _minMarketTokens) internal {
+    function buyGMToken(uint8 _poolId, uint256 _longTokenAmount, uint256 _shortTokenAmount, uint256 _minGmAmount) internal {
         // Retrieve pool configuration
         PoolConfig memory pool = pools[getPoolIndexById(_poolId)];
         IExchangeRouter _exchangeRouter = IExchangeRouter(routerConfig.exchangeRouter);
@@ -477,7 +531,7 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
             shortToken,
             longTokenSwapPath,
             shortTokenSwapPath,
-            _minMarketTokens,                  // minMarketTokens
+            _minGmAmount,                  // minMarketTokens
             gmxParams.shouldUnwrapNativeToken, // shouldUnwrapNativeToken
             executionFee,
             gmxParams.callbackGasLimit         // callbackGasLimit
@@ -506,6 +560,7 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
         ICallbackContract(gmxParams.callbackContract).addKey(bytes32(results[3]), ICallbackContract.State.Deposit);
     }
 
+    // Internal function to sell GM tokens in a specified pool.
     function sellGMToken(uint8 _poolId, uint256 marketAmount, uint256 lpAmount, uint256 _minLongTokenAmount, uint256 _minShortTokenAmount, address receiver) internal {
         // Retrieve pool configuration
         PoolConfig memory pool = pools[getPoolIndexById(_poolId)];
@@ -549,11 +604,12 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
 
         // Execute multicall with optional value (executionFee)
         bytes[] memory results = _exchangeRouter.multicall{value: gmxParams.executionFee}(multicallArgs);
+    
         ICallbackContract(gmxParams.callbackContract).addKey(bytes32(results[2]), ICallbackContract.State.Withdrawal);
         ICallbackContract(gmxParams.callbackContract).addWithdrawalData(bytes32(results[2]), lpAmount, receiver);
     }
 
-
+    // Create Gmx order with the gmx order params
     function createGMOrder(IExchangeRouter.CreateOrderParams memory _params) internal {
         require(_params.addresses.receiver == localVault, "Invalid receiver");
 
@@ -594,23 +650,35 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
         ICallbackContract(gmxParams.callbackContract).addKey(orderKey, ICallbackContract.State.Order);
     }
 
+    // Cancels a deposit operation identified by the specified key using the configured exchange router.
     function cancelDeposit(bytes32 key) internal {
+        // Get the exchange router from the configuration
         IExchangeRouter _exchangeRouter = IExchangeRouter(routerConfig.exchangeRouter);
+        
+        // Call the exchange router to cancel the deposit with the specified key
         _exchangeRouter.cancelDeposit(key);
     }
 
+    // Cancels a withdrawal operation identified by the specified key using the configured exchange router.
     function cancelWithdrawal(bytes32 key) internal {
+        // Get the exchange router from the configuration
         IExchangeRouter _exchangeRouter = IExchangeRouter(routerConfig.exchangeRouter);
+        
+        // Call the exchange router to cancel the withdrawal with the specified key
         _exchangeRouter.cancelWithdrawal(key);
     }
 
+    // Cancels an order identified by the specified key using the configured exchange router.
     function cancelOrder(bytes32 key) internal {
+        // Get the exchange router from the configuration
         IExchangeRouter _exchangeRouter = IExchangeRouter(routerConfig.exchangeRouter);
+        
+        // Call the exchange router to cancel the order with the specified key
         _exchangeRouter.cancelOrder(key);
     }
 
-
-   function getPoolTokenPrice(uint8 _poolId, bool _maximize) public view returns (int256) {
+    // Get the pool token price with the poolId
+    function getPoolTokenPrice(uint8 _poolId, bool _maximize) public view returns (int256) {
         require(poolExistsMap[_poolId], "GMX: Pool with this poolId does not exist");
         
         // Retrieve pool configuration
@@ -671,27 +739,54 @@ contract GmxPlugin is Ownable, IPlugin, ReentrancyGuardUpgradeable {
 
     // Retrieves the long and short tokens allowed in a pool.
     function getAllowedTokens(uint8 _poolId) public view returns (address[] memory) {
+        // Create an empty array to return if the pool does not exist
         address[] memory emptyArray;
+
+        // Check if the pool with the given ID exists
         if (!poolExistsMap[_poolId]) {
+            // Return an empty array if the pool does not exist
             return emptyArray;
         }
+
+        // Create an array to store the addresses of allowed tokens (long and short)
         address[] memory tokens = new address[](2);
+
+        // Retrieve the index of the pool in the pools array
         uint256 index = getPoolIndexById(_poolId);
+
+        // Retrieve the pool configuration using the index
         PoolConfig memory pool = pools[index];
 
+        // Assign the long and short token addresses to the array
         tokens[0] = pool.longToken;
         tokens[1] = pool.shortToken;
-        return tokens;
-    }
 
-    function getPoolTokenInfo(uint8 _poolId) public view returns (address, uint8) {
+        // Return the array containing the addresses of allowed tokens
+        return tokens;
+    }   
+
+    // Retrieves information about a pool identified by its ID.
+    function getPoolTokenInfo(uint8 _poolId) public view returns (address, uint8, uint256) {
+        // Check if the pool with the given ID exists
         if (!poolExistsMap[_poolId]) {
-            return (address(0), 0);
+            // Return default values if the pool does not exist
+            return (address(0), 0, 0);
         }
+
+        // Retrieve the index of the pool in the pools array
         uint256 index = getPoolIndexById(_poolId);
+
+        // Retrieve the pool configuration using the index
         PoolConfig memory pool = pools[index];
+
+        // Get the decimals of the market token associated with the pool
         uint8 decimals = IERC20Metadata(pool.marketToken).decimals();
-        return (pool.marketToken, decimals);
+
+        // Get the balance of the market token held by this contract
+        uint256 balance = IERC20(pool.marketToken).balanceOf(address(this));
+
+        // Return the market token address, decimals, and balance in a tuple
+        return (pool.marketToken, decimals, balance);
     }
 
     // Converts an amount from one decimal precision to another.
