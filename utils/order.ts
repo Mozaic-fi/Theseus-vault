@@ -1,4 +1,5 @@
 import { expect } from "chai";
+import { ethers } from "hardhat"
 import { mine } from "@nomicfoundation/hardhat-network-helpers";
 
 import { logGasUsage } from "./gas";
@@ -19,6 +20,13 @@ export const OrderType = {
   StopLossDecrease: 6,
   Liquidation: 7,
 };
+
+export const ActionType = {
+  Stake: 0,
+  Unstake: 1,
+  SwapTokens: 2,
+  ClaimRewards: 3
+}
 
 export const DecreasePositionSwapType = {
   NoSwap: 0,
@@ -109,6 +117,89 @@ export async function createOrder(fixture, overrides) {
     label: gasUsageLabel,
   });
 
+  const result = { txReceipt };
+  return result;
+}
+
+export async function createGmxPluginOrder(fixture, overrides) {
+  const { initialCollateralToken, orderType, gasUsageLabel } = overrides;
+  const { wallet, user0 } = fixture.accounts;
+
+  const decreasePositionSwapType = overrides.decreasePositionSwapType || DecreasePositionSwapType.NoSwap;
+  const sender = overrides.sender || wallet;
+  const account = overrides.account || user0;
+  const receiver = overrides.receiver || account;
+  const callbackContract = overrides.callbackContract || { address: ethers.constants.AddressZero };
+  const market = overrides.market || { marketToken: ethers.constants.AddressZero };
+  const uiFeeReceiver = overrides.uiFeeReceiver || { address: ethers.constants.AddressZero };
+  const sizeDeltaUsd = overrides.sizeDeltaUsd || "0";
+  const initialCollateralDeltaAmount = overrides.initialCollateralDeltaAmount || "0";
+  const swapPath = overrides.swapPath || [];
+  const acceptablePrice = overrides.acceptablePrice || expandDecimals(5200, 12);
+  const triggerPrice = overrides.triggerPrice || "0";
+  const isLong = overrides.isLong === undefined ? true : overrides.isLong;
+  const executionFee = overrides.executionFee || fixture.props.executionFee;
+  const callbackGasLimit = overrides.callbackGasLimit || bigNumberify(0);
+  const minOutputAmount = overrides.minOutputAmount || 0;
+  const shouldUnwrapNativeToken = overrides.shouldUnwrapNativeToken || false;
+  const referralCode = overrides.referralCode || ethers.constants.HashZero;
+  const gmxPlugin = overrides.gmx;
+
+  const params = {
+    addresses: {
+      receiver: receiver.address,
+      callbackContract: callbackContract.address,
+      uiFeeReceiver: uiFeeReceiver.address,
+      market: market.marketToken,
+      initialCollateralToken: initialCollateralToken.address,
+      swapPath,
+    },
+    numbers: {
+      sizeDeltaUsd,
+      initialCollateralDeltaAmount,
+      acceptablePrice,
+      triggerPrice,
+      executionFee,
+      callbackGasLimit,
+      minOutputAmount,
+    },
+    orderType,
+    decreasePositionSwapType,
+    isLong,
+    shouldUnwrapNativeToken,
+    referralCode: referralCode,
+  };
+
+  const payload = ethers.utils.defaultAbiCoder.encode([
+    'tuple(tuple(address,address,address,address,address,address[]),uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint8,uint8,bool,bool,bytes32)',
+    ], 
+    [[
+      [
+        params.addresses.receiver,
+        params.addresses.callbackContract,
+        params.addresses.uiFeeReceiver,
+        params.addresses.market,
+        params.addresses.initialCollateralToken,
+        params.addresses.swapPath,
+      ],
+      params.numbers.sizeDeltaUsd,
+      params.numbers.initialCollateralDeltaAmount,
+      params.numbers.acceptablePrice,
+      params.numbers.triggerPrice,
+      params.numbers.executionFee,
+      params.numbers.callbackGasLimit,
+      params.numbers.minOutputAmount,
+      params.orderType,
+      params.decreasePositionSwapType,
+      params.isLong,
+      params.shouldUnwrapNativeToken,
+      params.referralCode
+    ]]
+  );
+  const txReceipt = await logGasUsage({
+    tx: gmxPlugin.connect(user0).execute(ActionType.SwapTokens, payload),
+    label: gasUsageLabel,
+  });
   const result = { txReceipt };
   return result;
 }

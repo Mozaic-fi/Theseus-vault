@@ -9,16 +9,20 @@ interface IPlugin {
         // Action types
         Stake,
         Unstake,
-        GetTotalAssetsMD,
-        ClaimReward,
-        SwapRemote
+        SwapTokens,
+        ClaimRewards,
+        CancelAction
     }
 
-    function execute(ActionType _actionType, bytes calldata _payload) external payable returns(bytes memory response);
+    function execute(ActionType _actionType, bytes calldata _payload) external payable;
     
     function getTotalLiquidity() external view returns (uint256);
 
     function getPoolNumber() external view returns(uint256);
 
-    function getStakedAmount(uint8 _poolId) external view returns(uint256 _stakedAmount);
+    function getAllowedTokens(uint8 _poolId) external view returns (address[] memory tokens);
+
+    function getPoolTokenPrice(uint8 _poolId, bool _maximize) external view returns (int256);
+
+    function getPoolTokenInfo(uint8 _poolId) external view returns (address token, uint8 decimal, uint256 balance);
 }
